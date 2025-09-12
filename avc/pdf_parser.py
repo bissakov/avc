@@ -118,14 +118,6 @@ def process_halyk_bank(
     value_date_str = value_date_str.split("\n")[1]
     value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
 
-    # contragent_iin = get_cell(tables, 0, 1, 0)
-    # if not contragent_iin:
-    #     raise ValueError("contragent_iin cell 0-1-0 not found")
-    # contragent_iin_match = RE_IIN.search(contragent_iin)
-    # if not contragent_iin_match:
-    #     raise ValueError("contragent_iin not found by regex search")
-    # contragent_iin = contragent_iin_match.group(0)
-
     iin = get_cell(tables, 1, 1, 0)
     if not iin:
         raise ValueError("IIN cell 1-1-0 not found")
@@ -144,7 +136,7 @@ def process_halyk_bank(
 
 def process_bereke_bank(
     tables: Tables,
-) -> tuple[str, str, float, datetime, str]:
+) -> tuple[str, str, float, datetime, str, str]:
     logger.debug("Detected 'Bereke Bank' format")
 
     payer = get_cell(tables, 0, 0, 0)
@@ -168,10 +160,16 @@ def process_bereke_bank(
     amount_str = amount_str.split("\n")[1]
     amount = str_to_float(amount_str)
 
-    value_date_str = get_cell(tables, 0, 3, 2)
-    if not value_date_str:
-        raise ValueError("Value date cell 0-3-2 not found")
-    value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
+    try:
+        value_date_str = get_cell(tables, 0, 3, 2)
+        if not value_date_str:
+            raise ValueError("Value date cell 0-3-2 not found")
+        value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
+    except ValueError:
+        value_date_str = get_cell(tables, 0, 3, 3)
+        if not value_date_str:
+            raise ValueError("Value date cell 0-3-2 not found")
+        value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
 
     row = get_cell(tables, 0, 0, 0)
     if not row:
@@ -183,18 +181,15 @@ def process_bereke_bank(
         raise ValueError("IIN not found by regex search")
     iin = iin_match.group(0)
 
-    # row = get_cell(tables, 0, 0, 0)
-    # payer_idx= row.find("Отправитель денег")
-    # row = row[payer_idx::]
-    # contragent_iin_match = RE_IIN.search(row)
-    # if not contragent_iin_match:
-    #     raise ValueError("contragent_iin not found by regex search")
-    # contragent_iin = contragent_iin_match.group(0)
+    payment_purpose = get_cell(tables, 0, 1, 0)
+    if not payment_purpose:
+        raise ValueError("IIN cell 0-1-0 not found")
+    payment_purpose = payment_purpose.split("\n", maxsplit=1)[1].strip()
 
-    return payer, benificiary, amount, value_date, iin
+    return payer, benificiary, amount, value_date, iin, payment_purpose
 
 
-def extract_payment_order(file: Path) -> PaymentOrder | None:
+def extract_payment_order(file: Path, now: datetime) -> PaymentOrder | None:
     logger.debug(f"Extracting payment order from file: {file.as_posix()!r}")
 
     order = None
@@ -214,8 +209,8 @@ def extract_payment_order(file: Path) -> PaymentOrder | None:
                 process_halyk_bank(tables)
             )
         elif "Bereke" in get_cell(tables, 0, 0, 0):
-            payer, benificiary, amount, value_date, iin = process_bereke_bank(
-                tables
+            payer, benificiary, amount, value_date, iin, payment_purpose = (
+                process_bereke_bank(tables)
             )
         else:
             return None
@@ -239,9 +234,7 @@ def extract_payment_order(file: Path) -> PaymentOrder | None:
     value_date = value_date.replace(hour=5)
     logger.debug(f"Normalized value date: {value_date!r}")
 
-    days_old = (
-        datetime.now() - datetime.fromtimestamp(file.stat().st_mtime)
-    ).days
+    days_old = (now - datetime.fromtimestamp(file.stat().st_mtime)).days
 
     order = PaymentOrder(
         payer=payer,

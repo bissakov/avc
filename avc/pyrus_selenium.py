@@ -4,6 +4,8 @@ import os
 from time import sleep
 from typing import TYPE_CHECKING
 
+from pywinauto import Application
+from pywinauto.mouse import move
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver import ActionChains, Chrome, ChromeOptions, Keys
 from selenium.webdriver.chrome.service import Service
@@ -19,26 +21,74 @@ if TYPE_CHECKING:
     from typing import Self
 
     from selenium.webdriver.chrome.webdriver import WebDriver
+    from pywinauto import WindowSpecification
 
 logger = get_logger("avc")
+
+
+def get_center(element: WindowSpecification) -> tuple[int, int]:
+    rect = element.rectangle()
+    center = rect.mid_point()
+    return center.x, center.y
 
 
 class PyrusWebClient:
     def __init__(
         self, driver_path: Path | str, chrome_path: Path | str
     ) -> None:
-        service = Service(executable_path=str(driver_path))
+        self.driver_path: str = str(driver_path)
+        self.chrome_path: str = str(chrome_path)
+
+        self._driver: WebDriver | None = None
+        self._wait: WebDriverWait[WebDriver] | None = None
+        self._actions: ActionChains | None = None
+        self._app: Application | None = None
+        self._win: WindowSpecification | None = None
+
+    @property
+    def driver(self) -> WebDriver:
+        if self._driver:
+            return self._driver
+
+        service = Service(executable_path=self.driver_path)
         options = ChromeOptions()
-        options.binary_location = str(chrome_path)
+        options.binary_location = self.chrome_path
         prefs = {"profile.default_content_setting_values.notifications": 2}
         options.add_experimental_option("prefs", prefs)
         options.add_argument("--start-maximized")
         options.add_experimental_option("excludeSwitches", ["enable-logging"])
         options.add_argument("--log-level=3")
+        options.add_argument("--force-renderer-accessibility")
+        self._driver = Chrome(service=service, options=options)
+        return self._driver
 
-        self.driver: WebDriver = Chrome(service=service, options=options)
-        self.wait: WebDriverWait[WebDriver] = WebDriverWait(self.driver, 10)
-        self.actions: ActionChains = ActionChains(self.driver)
+    @property
+    def wait(self) -> WebDriverWait[WebDriver]:
+        if self._wait:
+            return self._wait
+        self._wait = WebDriverWait(self.driver, 10)
+        return self._wait
+
+    @property
+    def actions(self) -> ActionChains:
+        if self._actions:
+            return self._actions
+        self._actions = ActionChains(self.driver)
+        return self._actions
+
+    @property
+    def app(self) -> Application:
+        if self._app:
+           return self._app
+        self._app = Application(backend="uia").connect(title_re="Заявка.+")
+        return self._app
+
+    @property
+    def win(self) -> WindowSpecification:
+        if self._win:
+            return self._win
+        self._win = self.app.window(title_re="Заявка.+")
+        return self._win
 
     def login(self) -> None:
         login_url = os.environ["PYRUS_LOGIN_URL"]
@@ -62,7 +112,7 @@ class PyrusWebClient:
             )
         )
         password_field.send_keys(password)
-        self.actions.pause(1).send_keys(Keys.ENTER).pause(5).perform()
+        self.actions.pause(1).send_keys(Keys.ENTER).pause(3).perform()
 
     def upload_file(
         self,
@@ -72,13 +122,15 @@ class PyrusWebClient:
         url = f"https://pyrus.com/t#id{task_id}"
         self.driver.get(url)
 
-        sleep(5)
-
         form_expanded = False
         while not form_expanded:
-            sidebar = self.driver.find_element(
+            match = self.driver.find_elements(
                 By.CSS_SELECTOR, ".sideBySideRightContent"
             )
+            if not match:
+                sleep(.5)
+                continue
+            sidebar = match[0]
             class_names = str(sidebar.get_property("className")) or ""
             form_expanded = "sideBySideRightContent_expanded" in class_names
             if form_expanded:
@@ -94,34 +146,45 @@ class PyrusWebClient:
             )
         ).send_keys(str(file_path))
 
-        sleep(1)
+        # sleep(1)
+        #
+        # try:
+        #     save_btn = self.driver.find_element(
+        #         By.CSS_SELECTOR,
+        #         "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > button.button.sideBySideDecision__button.sideBySideDecision__button_simple.button_theme_green > span",
+        #     )
+        #     save_btn.click()
+        # except Exception as e:
+        #     logger.error(e)
+        #     raise e
+        #
+        #
+        # sleep(5)
+        #
+        # try:
+        #     approve_btn = self.driver.find_element(
+        #         By.CSS_SELECTOR,
+        #         "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > div > div > div.sideBySideDecision__decision.sideBySideDecision__decision_dropdown > div.sideBySideDecision__button.sideBySideDecision__button_basic.sideBySideDecision__button_approve > div.sideBySideDecision__buttonTitle.sideBySideDecision__buttonTitle_active",
+        #     )
+        # except Exception as e:
+        #     logger.error(e)
+        #     raise e
+        #
+        # self.actions.move_to_element(approve_btn).pause(1).click().perform()
 
-        try:
-            save_btn = self.driver.find_element(
-                By.CSS_SELECTOR,
-                "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > button.button.sideBySideDecision__button.sideBySideDecision__button_simple.button_theme_green > span",
-            )
-            save_btn.click()
-        except Exception as e:
-            logger.error(e)
-            raise e
-
+        self.win.set_focus()
+        save_btn = self.win.child_window(title="Сохранить", control_type="Text")
+        save_btn.click_input()
         logger.info(f"Task {task_id} saved")
 
-        sleep(5)
+        sleep(1)
 
-        try:
-            approve_btn = self.driver.find_element(
-                By.CSS_SELECTOR,
-                "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > div > div > div.sideBySideDecision__decision.sideBySideDecision__decision_dropdown > div.sideBySideDecision__button.sideBySideDecision__button_basic.sideBySideDecision__button_approve > div.sideBySideDecision__buttonTitle.sideBySideDecision__buttonTitle_active",
-            )
-        except Exception as e:
-            logger.error(e)
-            raise e
-
-        self.actions.move_to_element(approve_btn).pause(1).click().perform()
-
+        approve_btn = self.win.child_window(title="Утвердить", control_type="Text")
+        move(coords=get_center(approve_btn))
+        approve_btn.click_input()
         logger.info(f"Task {task_id} approved")
+
+        sleep(5)
 
         return True
 
@@ -141,8 +204,13 @@ class PyrusWebClient:
         __: BaseException | None,
         ___: TracebackType | None,
     ) -> bool:
-        self.driver.quit()
-        del self.driver
+        if self._driver:
+            self._driver.quit()
+            self._driver = None
+        if self._actions:
+            self._actions = None
+        if self._wait:
+            self._wait = None
         return False
 
 

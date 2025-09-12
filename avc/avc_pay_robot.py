@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import shutil
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
 from dotenv import load_dotenv
 
 from avc.logger import get_logger
@@ -18,6 +20,10 @@ from avc.utils import find_project_root
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from types import TracebackType
+    from typing import Self, TextIO
+
+    from _csv import _writer as CSVWriter
 
     from avc.models import PyrusEntry
     from avc.pdf_parser import PaymentOrder
@@ -38,19 +44,20 @@ class Result:
         return self.ok
 
 
-def pay_files_iter(remote_path: Path) -> Generator[Path]:
+def pay_files_iter(
+    remote_path: Path, data_files_folder: Path
+) -> Generator[tuple[Path, Path]]:
     for item in remote_path.iterdir():
         name = item.name
         if not (item.is_dir() and name[0].isdigit()):
             continue
 
-        for file in item.glob("*.pdf"):
-            days_old = (
-                datetime.now() - datetime.fromtimestamp(file.stat().st_mtime)
-            ).days
-            if days_old > 7:
-                continue
-            yield file
+        for network_file_path in item.glob("*.pdf"):
+            folder = data_files_folder / network_file_path.parent.name
+            folder.mkdir(exist_ok=True, parents=True)
+            local_file_path = folder / network_file_path.name
+            shutil.copy2(network_file_path, local_file_path)
+            yield network_file_path, local_file_path
 
 
 def resolve_network_paths(
@@ -58,7 +65,9 @@ def resolve_network_paths(
 ) -> tuple[Path | None, Result]:
     projects_parent_path = Path(CONTRAGENT_CATALOG[order.payer]["folder_path"])
     if not projects_parent_path.name:
-        logger.error(f"Payer's {order.payer!r} folder not found in 'N:/Общие диски'")
+        logger.error(
+            f"Payer's {order.payer!r} folder not found in 'N:/Общие диски'"
+        )
         return None, Result(
             ok=False,
             message=f"Не найдена папка для плательщика {order.payer!r} в 'N:/Общие диски'",
@@ -80,7 +89,10 @@ def resolve_network_paths(
     else:
         logger.info(f"Found folder: {project_path!r}")
         supplier_path = next(
-            (x for x in project_path.rglob("*поставщик*", case_sensitive=False)),
+            (
+                x
+                for x in project_path.rglob("*поставщик*", case_sensitive=False)
+            ),
             None,
         )
         if not supplier_path:
@@ -100,14 +112,18 @@ def resolve_network_paths(
     if not payment_order_folder:
         contragent = contragent.replace('"', "")
         payment_order_folder = (
-            supplier_path / f"{contragent}, {order.iin}" / "Финансовые документы"
+            supplier_path
+            / f"{contragent}, {order.iin}"
+            / "Финансовые документы"
         )
         payment_order_folder.mkdir(exist_ok=True, parents=True)
 
     return payment_order_folder, Result()
 
 
-def find_entry(entries: list[PyrusEntry], order: PaymentOrder) -> PyrusEntry | None:
+def find_entry(
+    entries: list[PyrusEntry], order: PaymentOrder
+) -> PyrusEntry | None:
     found_entries: list[PyrusEntry] = []
     for entry in entries:
         found = (
@@ -135,22 +151,30 @@ def find_entry(entries: list[PyrusEntry], order: PaymentOrder) -> PyrusEntry | N
 
 
 def process_payment_file(
-    file_path: Path, client: PyrusWebClient, entries: list[PyrusEntry]
+    local_file_path: Path,
+    network_file_path: Path,
+    client: PyrusWebClient,
+    entries: list[PyrusEntry],
+    log_writer: LogWriter,
+    now: datetime,
 ) -> Result:
-    order = extract_payment_order(file_path)
+    order = extract_payment_order(local_file_path, now)
 
     if not order:
-        note = f"Не удалось извлечь данные из {file_path.as_posix()!r}"
+        note = f"Не удалось извлечь данные из {network_file_path.as_posix()!r}"
         logger.warning(
-            f"Payment order has not been extracted: {file_path.as_posix()!r}"
+            f"Payment order has not been extracted: {network_file_path.as_posix()!r}"
         )
+        log_writer.append_record(pdf_file_path=network_file_path, note=note)
         return Result(ok=False, message=note)
     logger.info(f"Extracted order: {order!r}")
+    log_writer.append_record(pdf_file_path=network_file_path, note="Успех")
 
     entry = find_entry(entries, order)
     if not entry:
         note = "Не удалось найти задачу в Pyrus для платежного поручения"
         logger.error(note)
+        log_writer.append_record(pdf_file_path=network_file_path, note=note)
         return Result(ok=False, message=note)
     logger.info(f"Found entry: {entry!r}")
 
@@ -159,12 +183,21 @@ def process_payment_file(
 
     _ = client.upload_file(
         task_id=entry.task_id,
-        file_path=file_path,
+        file_path=local_file_path,
     )
 
     if not entry.project_id:
-        note = "Задача без № проекта. Конечный путь для переноса файла неизвестен"
+        note = (
+            "Задача без № проекта. Конечный путь для переноса файла неизвестен"
+        )
         logger.error(note)
+        log_writer.append_record(
+            pdf_file_path=network_file_path,
+            entry=entry,
+            note=note,
+            found_in_pyrus=True,
+            uploaded_to_pyrus=True,
+        )
         return Result(ok=False, message=note)
 
     payment_order_folder, result = resolve_network_paths(
@@ -178,27 +211,159 @@ def process_payment_file(
             or "Не найдена папка для плательщика {order.payer!r} в 'N:/Общие диски'"
         )
         logger.error(note)
+        log_writer.append_record(
+            pdf_file_path=network_file_path,
+            entry=entry,
+            note=note,
+            found_in_pyrus=True,
+            uploaded_to_pyrus=True,
+        )
         return Result(ok=False, message=note)
 
     assert payment_order_folder, "payment_order_folder is None"
 
     logger.info(
-        f"Attempting to move {file_path.name!r} to {payment_order_folder.as_posix()!r}"
+        f"Attempting to move {network_file_path.name!r} to {payment_order_folder.as_posix()!r}"
     )
-    dst_path = payment_order_folder / file_path.name
-    shutil.copy(file_path, dst_path)
+    dst_path = payment_order_folder / network_file_path.name
+    shutil.move(network_file_path, dst_path)
     logger.info(f"File moved: {dst_path.as_posix()!r}")
 
+    log_writer.append_record(
+        pdf_file_path=dst_path,
+        entry=entry,
+        found_in_pyrus=True,
+        uploaded_to_pyrus=True,
+        moved_file=True,
+        note="Успех",
+    )
+
     return Result()
+
+
+class LogWriter:
+    def __init__(self, file_path: Path) -> None:
+        self.file_path: Path = file_path
+        self.file_path.parent.mkdir(exist_ok=True, parents=True)
+
+        self._file: TextIO | None = None
+        self._writer: CSVWriter | None = None
+        self.headers: list[str] = [
+            "Ссылка",
+            "№ проекта",
+            "Инициатор",
+            "Контрагент",
+            "БИН/ИИН контрагента",
+            "Плательщик",
+            "Банк",
+            "Сумма",
+            "Валюта",
+            "Дата счета на оплату",
+            "Желаемая дата оплаты",
+            "Путь",
+            "Найдено в Pyrus",
+            "Загружено в Pyrus",
+            "Перенесено в сетевую папку",
+            "Заметки",
+        ]
+
+    @property
+    def file(self) -> TextIO:
+        if self._file:
+            return self._file
+        self._file = open(
+            self.file_path, mode="a", newline="", encoding="utf-8"
+        )
+        return self._file
+
+    @property
+    def writer(self) -> CSVWriter:
+        if self._writer:
+            return self._writer
+        self._writer = csv.writer(self.file, delimiter=";")
+        return self._writer
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        _: type[BaseException] | None,
+        __: BaseException | None,
+        ___: TracebackType | None,
+    ) -> bool:
+        if self._file:
+            self._file.close()
+            self._file = None
+
+        df = pd.read_csv(self.file_path, sep=";", header=None)
+        df = df.drop_duplicates()
+        df.to_csv(
+            self.file_path,
+            sep=";",
+            index=False,
+            header=False,
+            encoding="utf-8",
+        )
+        df.to_excel(
+            self.file_path.with_suffix(".xlsx"),
+            index=False,
+            header=self.headers,
+        )
+        return False
+
+    def append_record(
+        self,
+        pdf_file_path: Path,
+        note: str,
+        entry: PyrusEntry | None = None,
+        found_in_pyrus: bool = False,
+        uploaded_to_pyrus: bool = False,
+        moved_file: bool = False,
+    ) -> None:
+        url = f"https://pyrus.com/t#id{entry.task_id}" if entry else ""
+        row = [
+            url,
+            entry.project_id if entry else "",
+            entry.initiator_name if entry else "",
+            entry.contragent if entry else "",
+            entry.contragent_bin if entry else "",
+            entry.payer if entry else "",
+            entry.bank if entry else "",
+            entry.amount if entry else "",
+            entry.currency if entry else "",
+            entry.invoice_date if entry else "",
+            entry.desired_date if entry else "",
+            pdf_file_path,
+            "Да" if found_in_pyrus else "Нет",
+            "Да" if uploaded_to_pyrus else "Нет",
+            "Да" if moved_file else "Нет",
+            note,
+        ]
+        self.writer.writerow(row)
 
 
 def run(project_folder: Path | None = None) -> None:
     if not project_folder:
         project_folder = find_project_root()
 
+    now = datetime.now()
+
     resources_folder = project_folder / "resources"
+    data_folder = project_folder / "data"
+    data_folder.mkdir(exist_ok=True)
     driver_path = resources_folder / "chromedriver.exe"
     chrome_path = resources_folder / "chrome-win64" / "chrome.exe"
+    data_files_folder = (
+        data_folder / "files" / now.strftime("%Y-%m") / now.strftime("%d-%m-%Y")
+    )
+    data_files_folder.mkdir(exist_ok=True, parents=True)
+    robot_log_path = (
+        data_folder
+        / "logs"
+        / now.strftime("%Y-%m")
+        / f"{now.strftime('%d-%m-%Y')}.csv"
+    )
 
     logger.info("Starting AVC robot...")
 
@@ -213,24 +378,26 @@ def run(project_folder: Path | None = None) -> None:
     logger.info(f"Using remote path: {remote_path.as_posix()!r}")
 
     client = PyrusWebClient(driver_path=driver_path, chrome_path=chrome_path)
+    log_writer = LogWriter(robot_log_path)
 
     entries = get_active_entries(creds=creds)
 
-    # with open("entries.json", "r", encoding="utf-8") as f:
-    #     data: DataT = json.load(f)
-    # req_entries = data.get("Forms", [])
-    # logger.info(f"Found {len(req_entries)} entries")
-    # persons = data["ScopeCache"]["Persons"]
+    with client, log_writer:
+        # client.login()
 
-    # TODO: Logging to a file
-
-    with client:
-        client.login()
-
-        for idx, file_path in enumerate(pay_files_iter(remote_path)):
-            logger.info(f"Processing file #{idx:02}: {file_path.as_posix()!r}")
+        for idx, (network_file_path, local_file_path) in enumerate(
+            pay_files_iter(remote_path, data_files_folder)
+        ):
+            logger.info(
+                f"Processing file #{idx:02}: {local_file_path.as_posix()!r}"
+            )
             result = process_payment_file(
-                file_path=file_path, client=client, entries=entries
+                local_file_path=local_file_path,
+                network_file_path=network_file_path,
+                client=client,
+                entries=entries,
+                log_writer=log_writer,
+                now=now,
             )
             logger.info(f"Result: {result!r}")
 

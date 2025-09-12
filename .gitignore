@@ -11,7 +11,9 @@ wheels/
 
 /__pycache__
 /resources
-/logs
+/logs/
+/data
+/.idea
 
 .env
 *.json

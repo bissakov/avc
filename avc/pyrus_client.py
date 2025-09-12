@@ -7,16 +7,20 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 import requests
 
 from avc.logger import get_logger
-from avc.models import MAX_ITEM_COUNT, PayloadBuilder
+from avc.models import (
+    FIELD_COLUMN_MAPPING,
+    MAX_ITEM_COUNT,
+    PayloadBuilder,
+    PyrusEntry,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
     from typing import Any
 
-    from avc.models import FIELD_COLUMN_MAPPING, PyrusEntry, PyrusPayload
-    from avc.pdf_parser import PaymentOrder
-    from avc.types.misc import ParsedEntry
-    from avc.types.payload import (
+    from avc.models import PyrusPayload
+    from avc.my_types.misc import ParsedEntry
+    from avc.my_types.payload import (
         DataT,
         PersonT,
         PyrusAmountFieldT,
@@ -27,6 +31,7 @@ if TYPE_CHECKING:
         PyrusTextFieldT,
         PyrusValueFieldT,
     )
+    from avc.pdf_parser import PaymentOrder
 
 
 logger = get_logger("avc")
