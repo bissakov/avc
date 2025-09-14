@@ -4,9 +4,11 @@ import os
 from time import sleep
 from typing import TYPE_CHECKING
 
-from pywinauto import Application
-from pywinauto.mouse import move
-from selenium.common.exceptions import WebDriverException
+from pywinauto import Application, mouse
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    WebDriverException,
+)
 from selenium.webdriver import ActionChains, Chrome, ChromeOptions, Keys
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -14,14 +16,15 @@ from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.ui import WebDriverWait
 
 from avc.logger import get_logger
+from avc.models import CURATOR_MAPPING
 
 if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
     from typing import Self
 
-    from selenium.webdriver.chrome.webdriver import WebDriver
     from pywinauto import WindowSpecification
+    from selenium.webdriver.chrome.webdriver import WebDriver
 
 logger = get_logger("avc")
 
@@ -79,7 +82,7 @@ class PyrusWebClient:
     @property
     def app(self) -> Application:
         if self._app:
-           return self._app
+            return self._app
         self._app = Application(backend="uia").connect(title_re="Заявка.+")
         return self._app
 
@@ -112,15 +115,17 @@ class PyrusWebClient:
             )
         )
         password_field.send_keys(password)
-        self.actions.pause(1).send_keys(Keys.ENTER).pause(3).perform()
+        self.actions.pause(1).send_keys(Keys.ENTER).pause(5).perform()
 
     def upload_file(
         self,
         task_id: int,
         file_path: Path,
-    ) -> bool:
+    ) -> str | None:
         url = f"https://pyrus.com/t#id{task_id}"
         self.driver.get(url)
+
+        sleep(2)
 
         form_expanded = False
         while not form_expanded:
@@ -128,65 +133,80 @@ class PyrusWebClient:
                 By.CSS_SELECTOR, ".sideBySideRightContent"
             )
             if not match:
-                sleep(.5)
+                sleep(0.5)
                 continue
             sidebar = match[0]
-            class_names = str(sidebar.get_property("className")) or ""
+            try:
+                class_names = str(sidebar.get_property("className")) or ""
+            except StaleElementReferenceException:
+                sleep(0.5)
+                continue
             form_expanded = "sideBySideRightContent_expanded" in class_names
             if form_expanded:
                 break
             self.actions.send_keys("f").perform()
 
-        self.wait.until(
-            ec.presence_of_element_located(
-                (
-                    By.XPATH,
-                    "(//span[text() = '5. Вложение платежного поручения']//ancestor::div[2])[1]//div[text() = 'Загрузить файл']/following::input[1]",
-                )
-            )
-        ).send_keys(str(file_path))
+        file_uploaded = False
+        if file_uploaded:
+            return None
 
-        # sleep(1)
-        #
-        # try:
-        #     save_btn = self.driver.find_element(
-        #         By.CSS_SELECTOR,
-        #         "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > button.button.sideBySideDecision__button.sideBySideDecision__button_simple.button_theme_green > span",
-        #     )
-        #     save_btn.click()
-        # except Exception as e:
-        #     logger.error(e)
-        #     raise e
-        #
-        #
-        # sleep(5)
-        #
-        # try:
-        #     approve_btn = self.driver.find_element(
-        #         By.CSS_SELECTOR,
-        #         "#layout > div > div.sideBySideRightContent.sideBySideRightContent_expanded > div > div.sideBySideSubheader > div.sideBySideSubheader__topSection > div > div > div > div.sideBySideDecision__decision.sideBySideDecision__decision_dropdown > div.sideBySideDecision__button.sideBySideDecision__button_basic.sideBySideDecision__button_approve > div.sideBySideDecision__buttonTitle.sideBySideDecision__buttonTitle_active",
-        #     )
-        # except Exception as e:
-        #     logger.error(e)
-        #     raise e
-        #
-        # self.actions.move_to_element(approve_btn).pause(1).click().perform()
+        try:
+            self.wait.until(
+                ec.presence_of_element_located(
+                    (
+                        By.XPATH,
+                        "(//span[text() = '5. Вложение платежного поручения']//ancestor::div[2])[1]//div[text() = 'Загрузить файл']/following::input[1]",
+                    )
+                )
+            ).send_keys(str(file_path))
+        except Exception as e:
+            logger.error(e)
+            pass
+
+        sleep(2)
 
         self.win.set_focus()
-        save_btn = self.win.child_window(title="Сохранить", control_type="Text")
-        save_btn.click_input()
-        logger.info(f"Task {task_id} saved")
 
-        sleep(1)
+        try:
+            save_btn = self.win.child_window(
+                title="Сохранить", control_type="Button"
+            )
+            save_btn.wait(wait_for="exists", timeout=30)
+            save_btn.click_input()
+            logger.info(f"Task {task_id} saved")
+            sleep(2)
+        except Exception as e:
+            logger.error(e)
+            pass
 
-        approve_btn = self.win.child_window(title="Утвердить", control_type="Text")
-        move(coords=get_center(approve_btn))
-        approve_btn.click_input()
+        try:
+            approve_btn = self.win.child_window(
+                title="Утвердить", control_type="Text"
+            )
+            approve_btn.wait(wait_for="exists", timeout=30)
+            approve_btn_coords = get_center(approve_btn)
+            mouse.move(coords=approve_btn_coords)
+            mouse.click(coords=approve_btn_coords)
+        except Exception as e:
+            logger.error(e)
+            pass
+
         logger.info(f"Task {task_id} approved")
 
-        sleep(5)
+        sleep(2)
+        warnings = self.win.descendants(
+            title="Должно быть заполнено", control_type="Text"
+        )
+        if not warnings:
+            return None
 
-        return True
+        errors = ", ".join(
+            w.parent().children()[0].window_text() for w in warnings
+        )
+        # TODO: CURATOR_MAPPING
+        return (
+            f"Загрузка файла: неизвестная ошибка при утверждении: {errors!r}\n"
+        )
 
     def is_driver_running(self) -> bool:
         try:

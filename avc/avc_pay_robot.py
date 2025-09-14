@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,9 +22,7 @@ from avc.utils import find_project_root
 if TYPE_CHECKING:
     from collections.abc import Generator
     from types import TracebackType
-    from typing import Self, TextIO
-
-    from _csv import _writer as CSVWriter
+    from typing import Self
 
     from avc.models import PyrusEntry
     from avc.pdf_parser import PaymentOrder
@@ -73,9 +72,14 @@ def resolve_network_paths(
             message=f"Не найдена папка для плательщика {order.payer!r} в 'N:/Общие диски'",
         )
 
-    project_path = next(
-        (x for x in projects_parent_path.rglob(f"*{project_id}*")), None
-    )
+    try:
+        project_path = next(
+            (x for x in projects_parent_path.rglob(f"*{project_id}*")), None
+        )
+    except OSError as e:
+        logger.error(e)
+        project_path = None
+
     if not project_path:
         project_path = projects_parent_path / project_id
         supplier_path = project_path / "3. Поставщик"
@@ -157,6 +161,7 @@ def process_payment_file(
     entries: list[PyrusEntry],
     log_writer: LogWriter,
     now: datetime,
+    processed_tasks: list[str],
 ) -> Result:
     order = extract_payment_order(local_file_path, now)
 
@@ -168,7 +173,6 @@ def process_payment_file(
         log_writer.append_record(pdf_file_path=network_file_path, note=note)
         return Result(ok=False, message=note)
     logger.info(f"Extracted order: {order!r}")
-    log_writer.append_record(pdf_file_path=network_file_path, note="Успех")
 
     entry = find_entry(entries, order)
     if not entry:
@@ -180,16 +184,17 @@ def process_payment_file(
 
     url = f"https://pyrus.com/t#id{entry.task_id}"
     logger.info(f"Found entry: {url}")
+    if url in processed_tasks:
+        logger.info("Previously uploaded task, skipping")
+        return Result()
 
-    _ = client.upload_file(
+    note = client.upload_file(
         task_id=entry.task_id,
         file_path=local_file_path,
     )
 
     if not entry.project_id:
-        note = (
-            "Задача без № проекта. Конечный путь для переноса файла неизвестен"
-        )
+        note = f"{note or ''}Задача без № проекта. Конечный путь для переноса файла неизвестен"
         logger.error(note)
         log_writer.append_record(
             pdf_file_path=network_file_path,
@@ -233,9 +238,9 @@ def process_payment_file(
         pdf_file_path=dst_path,
         entry=entry,
         found_in_pyrus=True,
-        uploaded_to_pyrus=True,
+        uploaded_to_pyrus=True if not note else False,
         moved_file=True,
-        note="Успех",
+        note=note or "Успех",
     )
 
     return Result()
@@ -246,8 +251,6 @@ class LogWriter:
         self.file_path: Path = file_path
         self.file_path.parent.mkdir(exist_ok=True, parents=True)
 
-        self._file: TextIO | None = None
-        self._writer: CSVWriter | None = None
         self.headers: list[str] = [
             "Ссылка",
             "№ проекта",
@@ -267,22 +270,6 @@ class LogWriter:
             "Заметки",
         ]
 
-    @property
-    def file(self) -> TextIO:
-        if self._file:
-            return self._file
-        self._file = open(
-            self.file_path, mode="a", newline="", encoding="utf-8"
-        )
-        return self._file
-
-    @property
-    def writer(self) -> CSVWriter:
-        if self._writer:
-            return self._writer
-        self._writer = csv.writer(self.file, delimiter=";")
-        return self._writer
-
     def __enter__(self) -> Self:
         return self
 
@@ -292,10 +279,6 @@ class LogWriter:
         __: BaseException | None,
         ___: TracebackType | None,
     ) -> bool:
-        if self._file:
-            self._file.close()
-            self._file = None
-
         df = pd.read_csv(self.file_path, sep=";", header=None)
         df = df.drop_duplicates()
         df.to_csv(
@@ -340,14 +323,59 @@ class LogWriter:
             "Да" if moved_file else "Нет",
             note,
         ]
-        self.writer.writerow(row)
+
+        with open(self.file_path, "a", encoding="utf-8") as f:
+            writer = csv.writer(f, delimiter=";")
+            writer.writerow(row)
+
+
+def get_processed_tasks(robot_log_path: Path) -> list[str]:
+    if not robot_log_path.exists():
+        return []
+    df = pd.read_csv(robot_log_path, delimiter=";", header=None)
+    uploaded_tasks = list(set(list(df.loc[~df[0].isna(), 0])))
+    return uploaded_tasks
+
+
+def attach_network_drive() -> None:
+    is_network_drive_attached = Path("N:").exists()
+    if is_network_drive_attached:
+        logger.info("Network drive is already attached")
+        return
+
+    logger.info("Attaching network folder")
+
+    webdav_url = os.environ["WEBDAV_URL"]
+    user = os.environ["WEBDAV_USER"]
+    password = os.environ["WEBDAV_PASSWORD"]
+    args = [
+        "net",
+        "use",
+        "N:",
+        webdav_url,
+        f"/user:{user}",
+        f'"{password}"',
+        "/persistent:yes",
+    ]
+    res = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+    )
+
+    logger.info(f"Command line: {' '.join(args)!r}")
+    logger.info(f"Stdout: {res.stdout.strip()!r}")
+    logger.info(f"Stderr: {res.stderr.strip()!r}")
 
 
 def run(project_folder: Path | None = None) -> None:
+    attach_network_drive()
+
     if not project_folder:
         project_folder = find_project_root()
 
     now = datetime.now()
+    # now = datetime(2025, 9, 12)
 
     resources_folder = project_folder / "resources"
     data_folder = project_folder / "data"
@@ -364,6 +392,7 @@ def run(project_folder: Path | None = None) -> None:
         / now.strftime("%Y-%m")
         / f"{now.strftime('%d-%m-%Y')}.csv"
     )
+    processed_tasks = get_processed_tasks(robot_log_path)
 
     logger.info("Starting AVC robot...")
 
@@ -383,13 +412,13 @@ def run(project_folder: Path | None = None) -> None:
     entries = get_active_entries(creds=creds)
 
     with client, log_writer:
-        # client.login()
+        client.login()
 
         for idx, (network_file_path, local_file_path) in enumerate(
             pay_files_iter(remote_path, data_files_folder)
         ):
             logger.info(
-                f"Processing file #{idx:02}: {local_file_path.as_posix()!r}"
+                f"#{idx:02} processing file: {local_file_path.as_posix()!r}"
             )
             result = process_payment_file(
                 local_file_path=local_file_path,
@@ -398,6 +427,7 @@ def run(project_folder: Path | None = None) -> None:
                 entries=entries,
                 log_writer=log_writer,
                 now=now,
+                processed_tasks=processed_tasks,
             )
             logger.info(f"Result: {result!r}")
 

@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import date
 from logging.handlers import TimedRotatingFileHandler
 from typing import override
 
@@ -19,7 +20,7 @@ class CustomFormatter(logging.Formatter):
 def get_logger(name: str) -> logging.Logger:
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{name}.log")
+    log_file = os.path.join(log_dir, f"{date.today().isoformat()}.log")
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)

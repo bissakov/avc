@@ -7,8 +7,8 @@ if TYPE_CHECKING:
     from datetime import datetime
     from typing import Any, Self
 
-    from avc.types.misc import ContragentCatalogItem
-    from avc.types.payload import (
+    from avc.my_types.misc import ContragentCatalogItem
+    from avc.my_types.payload import (
         CatalogItemT,
         CatalogValueT,
         DateValueT,
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         TextValueT,
         ValueT,
     )
+
 
 MAX_ITEM_COUNT = 50
 
@@ -95,6 +96,29 @@ CONTRAGENT_CATALOG: dict[str, "ContragentCatalogItem"] = {
     'ТОО "Top Chemicals"': {"payer_id": 167153910, "folder_path": ""},
     'ТОО "Private Security"': {"payer_id": 168822146, "folder_path": ""},
     "ТОО СИСТЕМОТЕХНИКА": {"payer_id": 168822147, "folder_path": ""},
+}
+
+CURATOR_MAPPING = {
+    'ТОО "AVC Групп"': "Куралай Куанова",
+    'ТОО "AVC Group"': "Самал Жаманкулова",
+    'ТОО "AVC Production"': "Салтанат Дарханкызы",
+    'ТОО "CES Kazakhstan"': "Бухгалтерия 07",
+    'ТОО "ЭОН Энерго"': "Айжан Байбусинова",
+    'ТОО "Примус Групп"': "Жанар Джангалиева",
+    'ТОО "ГринТехСнаб"': "Жанар Джангалиева",
+    'ТОО "VC Services"': "Раушан Лекерова",
+    'ТОО "C-NRG (Синерджи)"': "Самал Жаманкулова",
+    'ТОО "Digital Enterprise"': "Бухгалтерия 10",
+    'ТОО "First Service"': "Раушан Лекерова",
+    'ТОО "First Delivery"': "Раушан Лекерова",
+    'ТОО "Refoil"': "Айжан Байбусинова",
+    'ТОО "Стройтэкс KZ"': "Айжан Байбусинова",
+    'ТОО "Veiron (Вейрон)"': "Зарина Баширова",
+    "Keremet Property": "Раушан Лекерова",
+    'ТОО "ДЖС Аналитикс Казахстан"': "Зарина Баширова",
+    'ТОО "Top Chemicals"': "Зарина Баширова",
+    'ТОО "Private Security"': "Раушан Лекерова",
+    "ТОО СИСТЕМОТЕХНИКА": "Айжан Байбусинова",
 }
 
 FIELD_COLUMN_MAPPING = {
