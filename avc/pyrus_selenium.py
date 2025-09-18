@@ -204,6 +204,13 @@ class PyrusWebClient:
             w.parent().children()[0].window_text() for w in warnings
         )
         # TODO: CURATOR_MAPPING
+
+        warnings = self.win.descendants(
+            title="Должно быть заполнено", control_type="Text"
+        )
+        if not warnings:
+            return None
+
         return (
             f"Загрузка файла: неизвестная ошибка при утверждении: {errors!r}\n"
         )

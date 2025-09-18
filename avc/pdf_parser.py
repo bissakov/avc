@@ -109,13 +109,18 @@ def process_halyk_bank(
     amount_str = get_cell(tables, 0, 3, 0)
     if not amount_str:
         raise ValueError("Amount cell 0-3-0 not found")
-    amount_str = amount_str.split("\n")[1]
+    amount_str = (
+        items[1] if len((items := amount_str.split("\n"))) > 1 else items[0]
+    )
     amount = str_to_float(amount_str)
 
     value_date_str = get_cell(tables, 0, 1, 1)
     if not value_date_str:
         raise ValueError("Value date cell 0-1-1 not found")
-    value_date_str = value_date_str.split("\n")[1]
+
+    value_date_str = (
+        items[1] if len((items := value_date_str.split("\n"))) > 1 else items[0]
+    )
     value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
 
     iin = get_cell(tables, 1, 1, 0)
@@ -129,7 +134,10 @@ def process_halyk_bank(
     payment_purpose = get_cell(tables, 3, 0, 0)
     if not payment_purpose:
         raise ValueError("IIN cell 3-1-0 not found")
-    payment_purpose = payment_purpose.split("\n", maxsplit=1)[1].strip()
+    try:
+        payment_purpose = payment_purpose.split("\n", maxsplit=1)[1].strip()
+    except IndexError:
+        payment_purpose = ""
 
     return payer, benificiary, amount, value_date, iin, payment_purpose
 
@@ -215,14 +223,7 @@ def extract_payment_order(file: Path, now: datetime) -> PaymentOrder | None:
         else:
             return None
 
-    if (
-        not benificiary
-        or not amount
-        or not value_date
-        or not iin
-        or not payer
-        or not payment_purpose
-    ):
+    if not benificiary or not amount or not value_date or not iin or not payer:
         logger.error(
             f"Failed to extract one of the values: {benificiary=!r}, {amount=!r}, {value_date=!r}, {iin=!r}, {payer=!r}"
         )

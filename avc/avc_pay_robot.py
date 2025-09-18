@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import csv
 import os
 import shutil
-import subprocess
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pandas as pd
 from dotenv import load_dotenv
 
 from avc.logger import get_logger
@@ -17,12 +13,16 @@ from avc.models import CONTRAGENT_CATALOG
 from avc.pdf_parser import extract_payment_order
 from avc.pyrus_client import Credentials, get_active_entries
 from avc.pyrus_selenium import PyrusWebClient
-from avc.utils import find_project_root
+from avc.utils import (
+    LogWriter,
+    Result,
+    attach_network_drive,
+    find_project_root,
+    get_processed_tasks,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from types import TracebackType
-    from typing import Self
 
     from avc.models import PyrusEntry
     from avc.pdf_parser import PaymentOrder
@@ -32,15 +32,6 @@ load_dotenv()
 
 
 logger = get_logger("avc")
-
-
-@dataclass(slots=True)
-class Result:
-    ok: bool = True
-    message: str | None = None
-
-    def __bool__(self) -> bool:
-        return self.ok
 
 
 def pay_files_iter(
@@ -127,7 +118,7 @@ def resolve_network_paths(
 
 def find_entry(
     entries: list[PyrusEntry], order: PaymentOrder
-) -> PyrusEntry | None:
+) -> tuple[PyrusEntry | None, str | None]:
     found_entries: list[PyrusEntry] = []
     for entry in entries:
         found = (
@@ -138,8 +129,16 @@ def find_entry(
         if found:
             found_entries.append(entry)
 
+    message = None
     if len(found_entries) > 1:
         logger.info("Attempting to narrow down the search...")
+        candidates = ", ".join(
+            [f"https://pyrus.com/t#id{e.task_id}" for e in found_entries]
+        )
+        message = (
+            "Невозможно определить задачу для вложения платежного поручения. "
+            f"Возможные кандидаты: {candidates}"
+        )
         found_entries = [
             e
             for e in found_entries
@@ -148,10 +147,10 @@ def find_entry(
 
     logger.info(f"Found count: {len(found_entries)}")
     if not found_entries:
-        return None
+        return None, message
 
     found_entry = found_entries[0]
-    return found_entry
+    return found_entry, None
 
 
 def process_payment_file(
@@ -174,9 +173,11 @@ def process_payment_file(
         return Result(ok=False, message=note)
     logger.info(f"Extracted order: {order!r}")
 
-    entry = find_entry(entries, order)
+    entry, message = find_entry(entries, order)
     if not entry:
         note = "Не удалось найти задачу в Pyrus для платежного поручения"
+        if message:
+            note += " " + message
         logger.error(note)
         log_writer.append_record(pdf_file_path=network_file_path, note=note)
         return Result(ok=False, message=note)
@@ -246,136 +247,17 @@ def process_payment_file(
     return Result()
 
 
-class LogWriter:
-    def __init__(self, file_path: Path) -> None:
-        self.file_path: Path = file_path
-        self.file_path.parent.mkdir(exist_ok=True, parents=True)
-
-        self.headers: list[str] = [
-            "Ссылка",
-            "№ проекта",
-            "Инициатор",
-            "Контрагент",
-            "БИН/ИИН контрагента",
-            "Плательщик",
-            "Банк",
-            "Сумма",
-            "Валюта",
-            "Дата счета на оплату",
-            "Желаемая дата оплаты",
-            "Путь",
-            "Найдено в Pyrus",
-            "Загружено в Pyrus",
-            "Перенесено в сетевую папку",
-            "Заметки",
-        ]
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(
-        self,
-        _: type[BaseException] | None,
-        __: BaseException | None,
-        ___: TracebackType | None,
-    ) -> bool:
-        df = pd.read_csv(self.file_path, sep=";", header=None)
-        df = df.drop_duplicates()
-        df.to_csv(
-            self.file_path,
-            sep=";",
-            index=False,
-            header=False,
-            encoding="utf-8",
-        )
-        df.to_excel(
-            self.file_path.with_suffix(".xlsx"),
-            index=False,
-            header=self.headers,
-        )
-        return False
-
-    def append_record(
-        self,
-        pdf_file_path: Path,
-        note: str,
-        entry: PyrusEntry | None = None,
-        found_in_pyrus: bool = False,
-        uploaded_to_pyrus: bool = False,
-        moved_file: bool = False,
-    ) -> None:
-        url = f"https://pyrus.com/t#id{entry.task_id}" if entry else ""
-        row = [
-            url,
-            entry.project_id if entry else "",
-            entry.initiator_name if entry else "",
-            entry.contragent if entry else "",
-            entry.contragent_bin if entry else "",
-            entry.payer if entry else "",
-            entry.bank if entry else "",
-            entry.amount if entry else "",
-            entry.currency if entry else "",
-            entry.invoice_date if entry else "",
-            entry.desired_date if entry else "",
-            pdf_file_path,
-            "Да" if found_in_pyrus else "Нет",
-            "Да" if uploaded_to_pyrus else "Нет",
-            "Да" if moved_file else "Нет",
-            note,
-        ]
-
-        with open(self.file_path, "a", encoding="utf-8") as f:
-            writer = csv.writer(f, delimiter=";")
-            writer.writerow(row)
-
-
-def get_processed_tasks(robot_log_path: Path) -> list[str]:
-    if not robot_log_path.exists():
-        return []
-    df = pd.read_csv(robot_log_path, delimiter=";", header=None)
-    uploaded_tasks = list(set(list(df.loc[~df[0].isna(), 0])))
-    return uploaded_tasks
-
-
-def attach_network_drive() -> None:
-    is_network_drive_attached = Path("N:").exists()
-    if is_network_drive_attached:
-        logger.info("Network drive is already attached")
-        return
-
-    logger.info("Attaching network folder")
-
-    webdav_url = os.environ["WEBDAV_URL"]
-    user = os.environ["WEBDAV_USER"]
-    password = os.environ["WEBDAV_PASSWORD"]
-    args = [
-        "net",
-        "use",
-        "N:",
-        webdav_url,
-        f"/user:{user}",
-        f'"{password}"',
-        "/persistent:yes",
-    ]
-    res = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-    )
-
-    logger.info(f"Command line: {' '.join(args)!r}")
-    logger.info(f"Stdout: {res.stdout.strip()!r}")
-    logger.info(f"Stderr: {res.stderr.strip()!r}")
-
-
 def run(project_folder: Path | None = None) -> None:
-    attach_network_drive()
+    logger.info("Starting AVC robot...")
+
+    remote_path = Path(os.environ["REMOTE_PATH"]) / "F. Платежи"
+    logger.info(f"Using remote path: {remote_path.as_posix()!r}")
+    attach_network_drive(remote_path)
 
     if not project_folder:
         project_folder = find_project_root()
 
     now = datetime.now()
-    # now = datetime(2025, 9, 12)
 
     resources_folder = project_folder / "resources"
     data_folder = project_folder / "data"
@@ -392,9 +274,8 @@ def run(project_folder: Path | None = None) -> None:
         / now.strftime("%Y-%m")
         / f"{now.strftime('%d-%m-%Y')}.csv"
     )
-    processed_tasks = get_processed_tasks(robot_log_path)
 
-    logger.info("Starting AVC robot...")
+    processed_tasks = get_processed_tasks(robot_log_path)
 
     creds = Credentials(
         email=os.environ["PYRUS_EMAIL"],
@@ -402,9 +283,6 @@ def run(project_folder: Path | None = None) -> None:
         person_id=int(os.environ["PYRUS_PERSON_ID"]),
     )
     logger.info(f"Using Pyrus account: {creds.email!r}")
-
-    remote_path = Path(os.environ["REMOTE_PATH"]) / "F. Платежи"
-    logger.info(f"Using remote path: {remote_path.as_posix()!r}")
 
     client = PyrusWebClient(driver_path=driver_path, chrome_path=chrome_path)
     log_writer = LogWriter(robot_log_path)
