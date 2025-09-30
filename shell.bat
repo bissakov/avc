@@ -2,7 +2,7 @@
 
 cd %~dp0
 
-pushd E:\Work\nvim-portable
+pushd ..\nvim-portable
 
 call start-shell.bat
 popd

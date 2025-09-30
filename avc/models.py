@@ -297,14 +297,14 @@ class PyrusPayload:
 
 class PayloadBuilder:
     def __init__(self):
-        self._active_only: bool = False
+        self._active_only: bool = True
         self._max_item_count: int = MAX_ITEM_COUNT
         self._filters: list[PyrusFilter] = []
 
         self.repr: str = "PayloadBuilder("
 
     def reset(self) -> None:
-        self._active_only = False
+        self._active_only = True
         self._max_item_count = 5
         self._filters.clear()
 
@@ -435,6 +435,8 @@ class PyrusEntry(NamedTuple):
     initiator_name: str | None
     contragent: str | None
     contragent_bin: str | None
+    contragent2: str | None
+    contragent_bin2: str | None
     payer: str
     payment_group: str | None
     payment_purpose: str | None

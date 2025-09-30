@@ -88,6 +88,12 @@ def parse_entry(req_entry: PyrusEntryT, persons: list[PersonT]) -> PyrusEntry:
         elif fid == 45:
             field = cast("PyrusTextFieldT", field)
             tmp["Краткое описание"] = field["Text"]
+        elif fid == 26:
+            field = cast("PyrusTextFieldT", field)
+            tmp["Контрагент2"] = field["Text"]
+        elif fid == 27:
+            field = cast("PyrusTextFieldT", field)
+            tmp["БИН/ИИН2"] = field["Text"]
         elif fid == 5:
             field = cast("PyrusValueFieldT", field)
             tmp["Инициатор ID"] = field["Value"]
@@ -160,6 +166,8 @@ def parse_entry(req_entry: PyrusEntryT, persons: list[PersonT]) -> PyrusEntry:
         initiator_name=data["Инициатор"],
         contragent=data.get("Контрагент"),
         contragent_bin=data.get("БИН/ИИН"),
+        contragent2=data.get("Контрагент2"),
+        contragent_bin2=data.get("БИН/ИИН2"),
         payer=data["Плательщик"],
         payment_group=data.get("Группа платежей"),
         payment_purpose=data.get("Назначение платежа"),

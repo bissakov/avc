@@ -133,7 +133,9 @@ def process_halyk_bank(
 
     payment_purpose = get_cell(tables, 3, 0, 0)
     if not payment_purpose:
-        raise ValueError("IIN cell 3-1-0 not found")
+        payment_purpose = get_cell(tables, 2, 0, 0)
+        if not payment_purpose:
+            raise ValueError("payment_purpose cell 3-0-0 or 2-0-0 not found")
     try:
         payment_purpose = payment_purpose.split("\n", maxsplit=1)[1].strip()
     except IndexError:

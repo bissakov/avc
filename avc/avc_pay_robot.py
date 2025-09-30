@@ -121,11 +121,10 @@ def find_entry(
 ) -> tuple[PyrusEntry | None, str | None]:
     found_entries: list[PyrusEntry] = []
     for entry in entries:
-        found = (
-            entry.payer == order.payer
-            and entry.contragent_bin == order.iin
-            and entry.amount == order.amount
-        )
+        if entry.payer != order.payer:
+            continue
+        contragent_bin = entry.contragent_bin or entry.contragent_bin2
+        found = contragent_bin == order.iin and entry.amount == order.amount
         if found:
             found_entries.append(entry)
 
@@ -188,6 +187,17 @@ def process_payment_file(
     if url in processed_tasks:
         logger.info("Previously uploaded task, skipping")
         return Result()
+
+    # # TODO: Use only when testing
+    # log_writer.append_record(
+    #     pdf_file_path=network_file_path,
+    #     entry=entry,
+    #     found_in_pyrus=True,
+    #     uploaded_to_pyrus=False,
+    #     moved_file=True,
+    #     note="Успех",
+    # )
+    # return Result()
 
     note = client.upload_file(
         task_id=entry.task_id,
@@ -252,7 +262,9 @@ def run(project_folder: Path | None = None) -> None:
 
     remote_path = Path(os.environ["REMOTE_PATH"]) / "F. Платежи"
     logger.info(f"Using remote path: {remote_path.as_posix()!r}")
-    attach_network_drive(remote_path)
+    if not remote_path.exists():
+        logger.error("Network drive is not attached")
+        return
 
     if not project_folder:
         project_folder = find_project_root()
@@ -272,7 +284,7 @@ def run(project_folder: Path | None = None) -> None:
         data_folder
         / "logs"
         / now.strftime("%Y-%m")
-        / f"{now.strftime('%d-%m-%Y')}.csv"
+        / f"{now.strftime('%Y.%m.%d')}.csv"
     )
 
     processed_tasks = get_processed_tasks(robot_log_path)

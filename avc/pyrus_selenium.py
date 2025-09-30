@@ -201,7 +201,8 @@ class PyrusWebClient:
             return None
 
         errors = ", ".join(
-            w.parent().children()[0].window_text() for w in warnings
+            f"{w.parent().children()[0].window_text()} - Должно быть заполнено"
+            for w in warnings
         )
         # TODO: CURATOR_MAPPING
 
