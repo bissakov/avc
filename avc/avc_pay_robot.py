@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +15,6 @@ from avc.pyrus_selenium import PyrusWebClient
 from avc.utils import (
     LogWriter,
     Result,
-    attach_network_drive,
     find_project_root,
     get_processed_tasks,
 )
@@ -50,8 +48,39 @@ def pay_files_iter(
             yield network_file_path, local_file_path
 
 
+import os
+from pathlib import Path
+
+
+def find_project_manual(projects_parent_path: Path, project_id: str, max_depth: int = 10) -> Path | None:
+    def _search_recursive(current_path: str, depth: int = 0) -> Path | None:
+        if depth > max_depth:
+            return None
+        # print(f"Current depth: {depth}")
+
+        try:
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+
+                    if project_id in entry.name:
+                        return Path(entry.path)
+
+                    result = _search_recursive(entry.path, depth + 1)
+                    if result:
+                        return result
+        except (OSError, PermissionError):
+            pass
+
+        return None
+
+    return _search_recursive(str(projects_parent_path))
+
+
+
 def resolve_network_paths(
-    order: PaymentOrder, project_id: str, contragent: str
+    order: PaymentOrder, project_id: str, contragent: str, year: str
 ) -> tuple[Path | None, Result]:
     projects_parent_path = Path(CONTRAGENT_CATALOG[order.payer]["folder_path"])
     if not projects_parent_path.name:
@@ -64,23 +93,45 @@ def resolve_network_paths(
         )
 
     try:
-        project_path = next(
-            (x for x in projects_parent_path.rglob(f"*{project_id}*")), None
-        )
-    except OSError as e:
+        project_id_year = str(int(project_id[-2::]) + 2000)
+    except Exception as e:
+        logger.error(f"Не удалось получить год из номера проекта: {project_id}")
         logger.error(e)
-        project_path = None
+        logger.exception(e)
+        return None, Result(
+            ok=False,
+            message=f"Не удалось получить год из номера проекта: {project_id}",
+        )
+
+    projects_parent_path = projects_parent_path / project_id_year
+    if not projects_parent_path.exists():
+        return None, Result(
+            ok=False,
+            message=f"Не найдена папка года {year} для плательщика {order.payer!r} в {projects_parent_path.as_posix()!r}",
+        )
+
+    # try:
+    #     project_path = next(
+    #         (x for x in projects_parent_path.rglob(f"*{project_id}*")), None
+    #     )
+    # except OSError as e:
+    #     logger.error(e)
+    #     project_path = find_project_manual(projects_parent_path, project_id, max_depth=2)
+
+    project_path = find_project_manual(projects_parent_path, project_id, max_depth=2)
 
     if not project_path:
-        project_path = projects_parent_path / project_id
-        supplier_path = project_path / "3. Поставщик"
+        # project_path = projects_parent_path / project_id
+        # supplier_path = project_path / "3. Поставщик"
 
         logger.info(
-            f"Folders {(project_path, supplier_path)!r} do not exist. Creating it instead..."
+            f"Project {project_id!r} folder in {project_path!r} not found"
         )
 
-        project_path.mkdir(exist_ok=True, parents=True)
-        supplier_path.mkdir(exist_ok=True, parents=True)
+        return None, Result(
+            ok=False,
+            message=f"Не найдена папка проекта {project_id} для плательщика {order.payer!r} в {projects_parent_path.as_posix()!r}",
+        )
     else:
         logger.info(f"Found folder: {project_path!r}")
         supplier_path = next(
@@ -91,29 +142,45 @@ def resolve_network_paths(
             None,
         )
         if not supplier_path:
-            supplier_path = project_path / "3. Поставщик"
             logger.info(
-                f"Folder {supplier_path!r} does not exist. Creating it instead..."
+                f"Поставщик folder in {project_path!r} does not exist."
             )
-            supplier_path.mkdir(exist_ok=True, parents=True)
+            return None, Result(
+                ok=False,
+                message=f"Не найдена папка поставщика для плательщика {order.payer!r} в {project_path.as_posix()!r}",
+            )
         else:
             logger.info(f"Found folder: {supplier_path!r}")
 
     payment_order_folder = next(
-        (x for x in supplier_path.iterdir() if order.iin in x.name),
+        (x for x in supplier_path.iterdir() if order.iin in x.name.lower()),
         None,
     )
 
     if not payment_order_folder:
         contragent = contragent.replace('"', "")
-        payment_order_folder = (
+
+        result_folder = (
             supplier_path
             / f"{contragent}, {order.iin}"
             / "Финансовые документы"
         )
-        payment_order_folder.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Folder not found. Creating it instead {result_folder.as_posix()!r}")
+        result_folder.mkdir(exist_ok=True, parents=True)
+    else:
+        logger.info(f"Folder found. Attempting to find 'Финансовые документы' in {payment_order_folder.as_posix()!r}")
+        result_folder = next(
+            (x for x in payment_order_folder.iterdir() if "фин" in x.name.lower()),
+            None,
+        )
+        if not result_folder:
+            logger.info(
+                f"Финансовые документы folder in {payment_order_folder.as_posix()!r} does not exist. Creating instead"
+            )
+            result_folder = payment_order_folder / "Финансовые документы"
+            result_folder.mkdir(exist_ok=True, parents=True)
 
-    return payment_order_folder, Result()
+    return result_folder, Result()
 
 
 def find_entry(
@@ -220,6 +287,7 @@ def process_payment_file(
         order,
         project_id=entry.project_id,
         contragent=entry.contragent or order.benificiary,
+        year=str(now.year)
     )
     if not result:
         note = (
@@ -269,6 +337,7 @@ def run(project_folder: Path | None = None) -> None:
     if not project_folder:
         project_folder = find_project_root()
 
+    # now = datetime(2025, 10, 31)
     now = datetime.now()
 
     resources_folder = project_folder / "resources"

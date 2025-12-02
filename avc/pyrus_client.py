@@ -94,7 +94,7 @@ def parse_entry(req_entry: PyrusEntryT, persons: list[PersonT]) -> PyrusEntry:
         elif fid == 27:
             field = cast("PyrusTextFieldT", field)
             tmp["БИН/ИИН2"] = field["Text"]
-        elif fid == 5:
+        elif fid == 1:
             field = cast("PyrusValueFieldT", field)
             tmp["Инициатор ID"] = field["Value"]
         elif fid == 48:
@@ -205,6 +205,45 @@ def pyrus_login(session: requests.Session, creds: Credentials) -> None:
     )
     logger.debug(f"Pyrus login response: {response.status_code!r}")
     response.raise_for_status()
+
+
+def get_contract_id(
+    session: requests.Session, contragent_bin: str, contract_number: str
+) -> int | None:
+    json_data = {
+        "req": {
+            "CatalogIds": [
+                199084,
+            ],
+        },
+    }
+
+    response = session.post(
+        "https://pyrus.com/Services/ClientServiceV2.svc/GetCatalogs",
+        json=json_data,
+    )
+    logger.debug(f"Get contract catalogue response: {response.status_code!r}")
+
+    response.raise_for_status()
+
+    content = response.content.decode("utf-8-sig")
+    data = json.loads(content)
+
+    rows = (
+        data.get("d", {})
+        .get("CatalogsWithItems", [])[0]
+        .get("Data", {})
+        .get("Items", [])
+    )
+
+    contragent_bin = contragent_bin.strip()
+    contract_number = contract_number.strip()
+    for row in rows:
+        contract_id = row.get("Id")
+        _, _, _, row_bin, row_contract_info = row.get("Values")
+        if contragent_bin in row_bin and contract_number in row_contract_info:
+            return contract_id
+    return None
 
 
 def get_entry_data(session: requests.Session, payload: PyrusPayload) -> DataT:

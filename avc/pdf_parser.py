@@ -199,10 +199,52 @@ def process_bereke_bank(
     return payer, benificiary, amount, value_date, iin, payment_purpose
 
 
+def process_swift_bank(
+    tables: Tables,
+) -> tuple[str, str, float, datetime, str, str]:
+    logger.debug("Detected 'Swift' format")
+
+    payer = get_cell(tables, 0, 0, 0)
+    if not payer:
+        raise ValueError("Payer cell 0-0-0 not found")
+    payer = payer.split("Отправитель денег:\n", maxsplit=1)[-1].split(
+        ",", maxsplit=1
+    )[0]
+    payer = payer.replace(" RESPUBLIKA KAZAKHSTAN", "")
+
+    benificiary = get_cell(tables, 2, 0, 0)
+    if not benificiary:
+        raise ValueError("Benificiary cell 2-0-0 not found")
+    benificiary = benificiary.split("Бенефициар:\n", maxsplit=1)[-1]
+
+    amount_str = get_cell(tables, 1, 1, 1)
+    if not amount_str:
+        raise ValueError("Amount cell 1-1-1 not found")
+    amount_str = amount_str.split("Сумма:\n", maxsplit=1)[-1]
+    amount = str_to_float(amount_str)
+
+    value_date_str = get_cell(tables, 0, 2, 2)
+    if not value_date_str:
+        raise ValueError("Value date cell 0-2-2 not found")
+    value_date_str = value_date_str.split("\n")[1]
+    value_date = datetime.strptime(value_date_str, "%d.%m.%Y")
+
+    iin = get_cell(tables, 2, 1, 1)
+    if not iin:
+        raise ValueError("IIN cell 2-1-1 not found")
+    iin = iin.split("БИН: ", maxsplit=1)[-1]
+
+    payment_purpose = get_cell(tables, 4, 0, 0)
+    if not payment_purpose:
+        raise ValueError("IIN cell 4-0-0 not found")
+    payment_purpose = payment_purpose.split("\n", maxsplit=1)[1].strip()
+
+    return payer, benificiary, amount, value_date, iin, payment_purpose
+
+
 def extract_payment_order(file: Path, now: datetime) -> PaymentOrder | None:
     logger.debug(f"Extracting payment order from file: {file.as_posix()!r}")
 
-    order = None
     benificiary = None
     amount = None
     value_date = None
@@ -214,15 +256,24 @@ def extract_payment_order(file: Path, now: datetime) -> PaymentOrder | None:
         page = pdf.pages[0]
         tables = page.extract_tables()
 
-        if "Народный" in get_cell(tables, 0, 2, 0):
-            payer, benificiary, amount, value_date, iin, payment_purpose = (
-                process_halyk_bank(tables)
-            )
-        elif "Bereke" in get_cell(tables, 0, 0, 0):
-            payer, benificiary, amount, value_date, iin, payment_purpose = (
-                process_bereke_bank(tables)
-            )
-        else:
+        try:
+            if "Народный" in get_cell(tables, 0, 2, 0):
+                payer, benificiary, amount, value_date, iin, payment_purpose = (
+                    process_halyk_bank(tables)
+                )
+            elif "Bereke" in get_cell(tables, 0, 0, 0):
+                payer, benificiary, amount, value_date, iin, payment_purpose = (
+                    process_bereke_bank(tables)
+                )
+            elif "SWIFT" in tables[1][0][-1]:
+                payer, benificiary, amount, value_date, iin, payment_purpose = (
+                    process_swift_bank(tables)
+                )
+            else:
+                return None
+        except Exception as e:
+            logger.error(e)
+            logger.exception(e)
             return None
 
     if not benificiary or not amount or not value_date or not iin or not payer:

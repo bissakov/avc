@@ -4,6 +4,7 @@ import base64
 import csv
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,11 +147,17 @@ class LogWriter:
                 header=False,
                 encoding="utf-8",
             )
+            xlsx_file_path = self.file_path.with_suffix(".xlsx")
             df.to_excel(
-                self.file_path.with_suffix(".xlsx"),
+                xlsx_file_path,
                 index=False,
                 header=self.headers,
             )
+            try:
+                shutil.copy(xlsx_file_path, fr"N:\Общие диски\F. Платежи\Логи\{xlsx_file_path.name}")
+            except Exception as e:
+                logger.error(e)
+                logger.exception(e)
         return False
 
     def append_record(

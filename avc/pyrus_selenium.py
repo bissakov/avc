@@ -16,7 +16,6 @@ from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.support.ui import WebDriverWait
 
 from avc.logger import get_logger
-from avc.models import CURATOR_MAPPING
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -117,6 +116,22 @@ class PyrusWebClient:
         password_field.send_keys(password)
         self.actions.pause(1).send_keys(Keys.ENTER).pause(5).perform()
 
+    def is_task_approved(self) -> bool:
+        try:
+            sidebar_reveal_btn = self.win.child_window(title="Развернуть сайдбар задачи", control_type="Button", found_index=0)
+
+            siblings = sidebar_reveal_btn.parent().children()
+
+            idx = siblings.index(sidebar_reveal_btn)
+            next_sibling = siblings[idx + 1] if idx + 1 < len(siblings) else None
+
+            is_approved = next((ch.window_text().strip() == "Утверждено" for ch in next_sibling.children()), False)
+            return is_approved
+        except Exception as e:
+            logger.error(e)
+            logger.exception(e)
+            return False
+
     def upload_file(
         self,
         task_id: int,
@@ -145,9 +160,10 @@ class PyrusWebClient:
             if form_expanded:
                 break
             self.actions.send_keys("f").perform()
+            mouse.move((0, 0))
 
-        file_uploaded = False
-        if file_uploaded:
+        is_approved = self.is_task_approved() and self.is_task_approved()
+        if is_approved:
             return None
 
         try:
@@ -167,6 +183,7 @@ class PyrusWebClient:
 
         self.win.set_focus()
 
+        save_btn = None
         try:
             save_btn = self.win.child_window(
                 title="Сохранить", control_type="Button"
@@ -179,6 +196,7 @@ class PyrusWebClient:
             logger.error(e)
             pass
 
+        approve_btn = None
         try:
             approve_btn = self.win.child_window(
                 title="Утвердить", control_type="Text"
@@ -191,20 +209,29 @@ class PyrusWebClient:
             logger.error(e)
             pass
 
-        logger.info(f"Task {task_id} approved")
-
-        sleep(2)
-        warnings = self.win.descendants(
-            title="Должно быть заполнено", control_type="Text"
-        )
-        if not warnings:
-            return None
-
-        errors = ", ".join(
-            f"{w.parent().children()[0].window_text()} - Должно быть заполнено"
-            for w in warnings
-        )
-        # TODO: CURATOR_MAPPING
+        try:
+            if approve_btn:
+                approve_btn.wait_not(wait_for_not="exists")
+            else:
+                approve_btn = self.win.child_window(
+                    title="Утвердить", control_type="Text"
+                )
+                if approve_btn.exists():
+                    approve_btn.wait_not(wait_for_not="exists")
+            self.win.child_window(title="Утверждено", control_type="Text", found_index=0).wait(wait_for="exists")
+            logger.info(f"Task {task_id} approved")
+            sleep(5)
+        except Exception as e:
+            logger.error(e)
+            warnings = self.win.descendants(
+                title="Должно быть заполнено", control_type="Text"
+            )
+            if warnings:
+                return (
+                    f"Загрузка файла: одно или несколько полей не были заполнены. Невозможно утвердить задачу\n"
+                )
+            else:
+                logger.error(e)
 
         warnings = self.win.descendants(
             title="Должно быть заполнено", control_type="Text"
@@ -213,7 +240,7 @@ class PyrusWebClient:
             return None
 
         return (
-            f"Загрузка файла: неизвестная ошибка при утверждении: {errors!r}\n"
+            f"Загрузка файла: одно или несколько полей не были заполнены. Невозможно утвердить задачу\n"
         )
 
     def is_driver_running(self) -> bool:

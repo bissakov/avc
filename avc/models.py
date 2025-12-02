@@ -47,7 +47,7 @@ CONTRAGENT_CATALOG: dict[str, "ContragentCatalogItem"] = {
     },
     'ТОО "ЭОН Энерго"': {
         "payer_id": 109941224,
-        "folder_path": r"N:\Общие диски\06. ЭОН Энерго",
+        "folder_path": r"N:\Общие диски\06. ЭОН Энерго\01. Проекты EON",
     },
     'ТОО "CES Kazakhstan"': {
         "payer_id": 109941225,
@@ -410,6 +410,21 @@ class PayloadBuilder:
         self.repr += (
             f"dt_range=({from_dt.isoformat()!r}, {to_dt.isoformat()!r}), "
         )
+        return self
+
+    def contract(self, contract_id: int) -> Self:
+        self._filters.append(
+            PyrusFilter(
+                field_id=39,
+                operator_id=4,
+                values=[
+                    CatalogValue(
+                        field_id=39, items=[CatalogItem(id=contract_id)]
+                    )
+                ],
+            )
+        )
+        self.repr += f"contract_id={contract_id!r}, "
         return self
 
     @override
